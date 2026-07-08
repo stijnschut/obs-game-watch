@@ -98,9 +98,10 @@ Once started, the script:
 6. If the **connection drops** mid-session, it retries up to 3 times again.
 7. After **3 failed attempts**: sends a critical notification and **stops**
    (start OBS and restart the service manually).
-8. **Clip notifications**: when you save a replay (via OBS hotkey or the
-   "Save Replay" button), the script catches the `ReplayBufferSaved` event
-   and shows a notification with the filename.
+8. **Clip on demand**: send `SIGUSR1` to save the replay buffer. The script
+   catches the signal, calls `SaveReplayBuffer`, and listens for the
+   `ReplayBufferSaved` event to show a notification with the filename.
+   (Set up a KDE global shortcut — see below.)
 
 Desktop notifications use `notify-send` (KDE, GNOME, dunst, etc.):
 
@@ -168,10 +169,11 @@ View live logs:
 journalctl --user -u obs-game-watch -f
 ```
 
-Stop or disable it:
+Stop, restart or disable it:
 
 ```bash
 systemctl --user stop obs-game-watch.service       # stop now
+systemctl --user restart obs-game-watch.service    # restart
 systemctl --user disable obs-game-watch.service    # don't start at boot
 ```
 

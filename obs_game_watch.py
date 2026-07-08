@@ -21,6 +21,7 @@ OBS:
 import logging
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -228,6 +229,22 @@ def _any_game_running() -> Optional[Game]:
     return None
 
 
+# ─── Clip signal (SIGUSR1) ───────────────────────────────────────────────────
+
+_clip_requested: bool = False
+
+
+def _handle_clip_signal(signum: int, frame) -> None:
+    """SIGUSR1 handler: flags the main loop to save the replay buffer.
+
+    This runs in signal context — only sets a flag, no I/O.
+    The actual save happens in run() to avoid race conditions with
+    ongoing WebSocket requests.
+    """
+    global _clip_requested
+    _clip_requested = True
+
+
 # ─── OBS event listener ────────────────────────────────────────────────────
 
 
@@ -265,11 +282,28 @@ def _start_event_client() -> Optional[obs.EventClient]:
 
 
 def run(client: obs.ReqClient, event_client: Optional[obs.EventClient] = None) -> None:
+    global _clip_requested
+
     current_game: Optional[Game] = None
     log.info("Watch started — Ultrawide + replay buffer active.")
     apply_game(client, DEFAULT_FULLSCREEN)
 
     while True:
+        # ── Check for clip request (set by SIGUSR1) ────────────────────────
+        if _clip_requested:
+            _clip_requested = False
+            try:
+                log.info("Clip requested — saving replay buffer...")
+                client.save_replay_buffer()
+                # Notification comes from ReplayBufferSaved event (async)
+            except Exception as e:
+                log.warning(f"Failed to save replay buffer: {e}")
+                notify(
+                    "OBS Game Watch",
+                    "Clip opslaan mislukt ❌",
+                    urgency="critical",
+                )
+
         # ── Game detection ──────────────────────────────────────────────────
         game = None
         source = ""
@@ -302,6 +336,9 @@ MAX_RETRIES = 3
 
 
 def main() -> None:
+    signal.signal(signal.SIGUSR1, _handle_clip_signal)
+    log.info("Clip shortcut: send SIGUSR1 to save replay buffer.")
+
     retries = 0
 
     while retries < MAX_RETRIES:
