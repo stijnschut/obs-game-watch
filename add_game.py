@@ -35,15 +35,10 @@ def _run(cmd: list[str]) -> Optional[str]:
 # ─── Fullscreen detection (same logic as obs_game_watch.py) ──────────────────
 
 
-def get_fullscreen_window() -> Optional[dict]:
-    """Detect the active fullscreen X11/XWayland window via xdotool + xprop.
-
-    Wayland-native windows cannot be queried non-interactively (KWin's
-    queryWindowInfo() shows a crosshair cursor). For Wayland-native games,
-    use manual entry instead (enter the process name when prompted).
-    """
+def _x11_fullscreen_window() -> Optional[dict]:
+    """Non-interactive X11/XWayland fullscreen detection via xdotool + xprop."""
     win_id = _run(["xdotool", "getactivewindow"])
-    if not win_id or win_id == "2097152":  # 2097152 = XWayland root on Wayland
+    if not win_id or win_id == "2097152":
         return None
 
     state = _run(["xprop", "-id", win_id, "_NET_WM_STATE"]) or ""
@@ -61,6 +56,44 @@ def get_fullscreen_window() -> Optional[dict]:
         "title_lower": title.lower(),
         "wm_class": wm_class.lower(),
     }
+
+
+# ─── Fullscreen detection ─────────────────────────────────────────────────────
+
+
+def get_fullscreen_window() -> Optional[dict]:
+    """Non-interactive fullscreen detection. Used during auto-scan."""
+    return _x11_fullscreen_window()
+
+
+def query_fullscreen_window_interactive() -> Optional[dict]:
+    """
+    Interactive fullscreen detection — shows a crosshair cursor so you can
+    click the target window. Uses KWin D-Bus for Wayland-native windows,
+    falls back to xdotool + xprop for X11 / XWayland.
+    """
+    # ── 1. KWin D-Bus — Wayland-native windows (interactive) ──────────────
+    try:
+        import dbus
+
+        bus = dbus.SessionBus()
+        kwin = bus.get_object("org.kde.KWin", "/KWin")
+        info = kwin.queryWindowInfo(dbus_interface="org.kde.KWin", timeout=30)
+
+        if info and info.get("fullscreen"):
+            caption = info.get("caption", "") or ""
+            wm_class = info.get("resourceClass", "") or ""
+            return {
+                "id": str(info.get("uuid", "")),
+                "title": caption,
+                "title_lower": caption.lower(),
+                "wm_class": wm_class.lower(),
+            }
+    except Exception:
+        pass
+
+    # ── 2. X11 / XWayland fallback (non-interactive) ───────────────────────
+    return _x11_fullscreen_window()
 
 
 # ─── Process detection via PID ───────────────────────────────────────────────
@@ -314,7 +347,7 @@ def main() -> None:
         print()
 
         while True:
-            window = get_fullscreen_window()
+            window = query_fullscreen_window_interactive()
             if window:
                 print(f"✅ Game detected: {window['title']}")
                 print()
