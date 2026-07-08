@@ -82,6 +82,8 @@ they'll automatically use the default `Ultrawide` profile.
 
 ## Running
 
+### Manually
+
 ```bash
 python obs_game_watch.py
 ```
@@ -90,6 +92,59 @@ The script runs in the foreground. It connects to OBS, sets the default
 profile, starts the replay buffer, and waits for fullscreen windows.
 
 Press **Ctrl+C** to stop.
+
+### Automatically at startup (recommended)
+
+The script needs to run continuously for the watchdog to work. The cleanest
+way is a **systemd user service** — it starts automatically after login,
+restarts on failure, and keeps logs.
+
+Create the service file and enable it:
+
+```bash
+mkdir -p ~/.config/systemd/user
+
+cat > ~/.config/systemd/user/obs-game-watch.service << 'EOF'
+[Unit]
+Description=OBS Game Watch — auto-switch OBS profiles/scenes based on fullscreen game
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/scripts/obs-game-watch/obs_game_watch.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+EOF
+
+systemctl --user daemon-reload
+systemctl --user enable --now obs-game-watch.service
+```
+
+Check that it's running:
+
+```bash
+systemctl --user status obs-game-watch.service
+```
+
+View live logs:
+
+```bash
+journalctl --user -u obs-game-watch -f
+```
+
+Stop or disable it:
+
+```bash
+systemctl --user stop obs-game-watch.service       # stop now
+systemctl --user disable obs-game-watch.service    # don't start at boot
+```
+
+> **Why systemd?** It starts after the graphical session is ready (so D-Bus
+> and OBS are available), restarts automatically if the script crashes,
+> and gives you proper logging via `journalctl`.
 
 ## File structure
 
@@ -101,3 +156,4 @@ Press **Ctrl+C** to stop.
 | `games_user.py` | ❌ | Your personal 16:9 game list (auto-created) |
 | `.env` | ❌ | Secrets (OBS password), copy of `.env.example` |
 | `.env.example` | ✅ | Template with all config keys |
+| `obs-game-watch.service` | ❌ | systemd user service (in `~/.config/systemd/user/`) |
