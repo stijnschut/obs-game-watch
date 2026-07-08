@@ -36,50 +36,31 @@ def _run(cmd: list[str]) -> Optional[str]:
 
 
 def get_fullscreen_window() -> Optional[dict]:
-    """Detect the active fullscreen window via KWin D-Bus (Wayland) or xprop (X11)."""
-    try:
-        import dbus
+    """Detect the active fullscreen X11/XWayland window via xdotool + xprop.
 
-        bus = dbus.SessionBus()
-        kwin = bus.get_object("org.kde.KWin", "/KWin")
-        info = kwin.queryWindowInfo(dbus_interface="org.kde.KWin", timeout=1.5)
-
-        if info and info.get("fullscreen"):
-            caption = info.get("caption", "") or ""
-            wm_class = info.get("resourceClass", "") or ""
-            return {
-                "id": str(info.get("uuid", "")),
-                "title": caption,
-                "title_lower": caption.lower(),
-                "wm_class": wm_class.lower(),
-            }
-    except Exception:
-        pass
-
-    client_list = _run(["xprop", "-root", "_NET_CLIENT_LIST_STACKING"])
-    if not client_list:
+    Wayland-native windows cannot be queried non-interactively (KWin's
+    queryWindowInfo() shows a crosshair cursor). For Wayland-native games,
+    use manual entry instead (enter the process name when prompted).
+    """
+    win_id = _run(["xdotool", "getactivewindow"])
+    if not win_id or win_id == "2097152":  # 2097152 = XWayland root on Wayland
         return None
 
-    ids = re.findall(r"0x[0-9a-fA-F]+", client_list)
-    if not ids:
+    state = _run(["xprop", "-id", win_id, "_NET_WM_STATE"]) or ""
+    if "_NET_WM_STATE_FULLSCREEN" not in state:
         return None
 
-    for win_id in reversed(ids):
-        state = _run(["xprop", "-id", win_id, "_NET_WM_STATE"]) or ""
-        if "_NET_WM_STATE_FULLSCREEN" not in state:
-            continue
-        title_raw = _run(["xprop", "-id", win_id, "_NET_WM_NAME"]) or ""
-        wm_class = _run(["xprop", "-id", win_id, "WM_CLASS"]) or ""
-        m = re.search(r'"(.+)"', title_raw)
-        title = m.group(1) if m else ""
-        return {
-            "id": win_id,
-            "title": title,
-            "title_lower": title.lower(),
-            "wm_class": wm_class.lower(),
-        }
+    title_raw = _run(["xprop", "-id", win_id, "_NET_WM_NAME"]) or ""
+    wm_class = _run(["xprop", "-id", win_id, "WM_CLASS"]) or ""
+    m = re.search(r'"(.+)"', title_raw)
+    title = m.group(1) if m else ""
 
-    return None
+    return {
+        "id": win_id,
+        "title": title,
+        "title_lower": title.lower(),
+        "wm_class": wm_class.lower(),
+    }
 
 
 # ─── Process detection via PID ───────────────────────────────────────────────

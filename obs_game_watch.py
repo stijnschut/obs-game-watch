@@ -2,19 +2,24 @@
 """
 obs_game_watch.py — OBS profile/scene switcher + always-on replay buffer.
 
-Detects fullscreen games (Wayland-native via KWin D-Bus, or Xwayland via xprop)
+Detects fullscreen games (XWayland via xdotool+xprop, Wayland-native via process)
 and switches OBS to the matching profile/scene. The replay buffer stays on at
 all times — no more missed clips.
 
+Wayland-native detection: KWin's D-Bus queryWindowInfo() is interactive (shows
+crosshair cursor), so it is NOT used. Instead, Wayland-native games are matched
+by running process (pgrep). Add process patterns in games_user.py via add_game.py.
+
 Requirements:
     pip install obsws-python
-    sudo pacman -S xdotool xorg-xprop python-dbus
+    sudo pacman -S xdotool xorg-xprop libnotify
 
 OBS:
     Tools → WebSocket Server Settings → Enable, set a password
 """
 
 import logging
+import os
 import re
 import subprocess
 import sys
@@ -23,7 +28,6 @@ from pathlib import Path
 from typing import Optional
 
 import obsws_python as obs
-
 from games_user import DEFAULT_FULLSCREEN, GAMES, Game
 
 # ─── Configuration ───────────────────────────────────────────────────────────
@@ -44,6 +48,26 @@ OBS_PASSWORD = os.getenv("OBS_PASSWORD", "")
 POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", "4"))
 RECONNECT_INTERVAL = float(os.getenv("RECONNECT_INTERVAL", "10"))
 PROFILE_SWITCH_WAIT = float(os.getenv("PROFILE_SWITCH_WAIT", "1.5"))
+
+
+# ─── Desktop notifications ──────────────────────────────────────────────────
+
+
+def notify(title: str, message: str, urgency: str = "normal") -> None:
+    """Send a desktop notification via notify-send (KDE/GNOME/dunst)."""
+    try:
+        subprocess.run(
+            [
+                "notify-send",
+                "--app-name=OBS Game Watch",
+                f"--urgency={urgency}",
+                title,
+                message,
+            ],
+            timeout=5,
+        )
+    except Exception:
+        pass  # notify-send niet beschikbaar — niet阻塞end
 
 
 # ─── Logging ─────────────────────────────────────────────────────────────────
@@ -70,58 +94,38 @@ def _run(cmd: list[str]) -> Optional[str]:
 
 def get_fullscreen_window() -> Optional[dict]:
     """
-    Return info about the topmost fullscreen window, or None.
+    Return info about the active fullscreen X11/XWayland window, or None.
 
-    Works on both KDE Wayland (KWin D-Bus) and Xwayland (xprop).
+    Uses xdotool + xprop to detect XWayland windows (Proton, Wine, etc.).
+    Wayland-native windows cannot be queried non-interactively — KWin's
+    queryWindowInfo() shows a crosshair cursor, so it is NOT used.
+    Wayland-native games are instead detected by process (see run()).
     """
-    # ── 1. KWin D-Bus — Wayland-native windows ─────────────────────────────
-    try:
-        import dbus
-
-        bus = dbus.SessionBus()
-        kwin = bus.get_object("org.kde.KWin", "/KWin")
-        info = kwin.queryWindowInfo(dbus_interface="org.kde.KWin", timeout=2)
-
-        if info and info.get("fullscreen"):
-            caption = info.get("caption", "") or ""
-            wm_class = info.get("resourceClass", "") or ""
-            return {
-                "id": str(info.get("uuid", "")),
-                "title": caption.lower(),
-                "wm_class": wm_class.lower(),
-                "source": "wayland",
-            }
-    except Exception:
-        pass
-
-    # ── 2. xprop — X11 / Xwayland windows (Proton, etc.) ───────────────────
-    client_list = _run(["xprop", "-root", "_NET_CLIENT_LIST_STACKING"])
-    if not client_list:
+    win_id = _run(["xdotool", "getactivewindow"])
+    if not win_id:
         return None
 
-    ids = re.findall(r"0x[0-9a-fA-F]+", client_list)
-    if not ids:
+    # On Wayland, xdotool returns the XWayland root window (0x200000 = 2097152)
+    # when no X11 window is active. Skip it — it has no real properties.
+    if win_id == "2097152":
         return None
 
-    for win_id in reversed(ids):
-        state = _run(["xprop", "-id", win_id, "_NET_WM_STATE"]) or ""
-        if "_NET_WM_STATE_FULLSCREEN" not in state:
-            continue
+    state = _run(["xprop", "-id", win_id, "_NET_WM_STATE"]) or ""
+    if "_NET_WM_STATE_FULLSCREEN" not in state:
+        return None
 
-        title_raw = _run(["xprop", "-id", win_id, "_NET_WM_NAME"]) or ""
-        wm_class = _run(["xprop", "-id", win_id, "WM_CLASS"]) or ""
+    title_raw = _run(["xprop", "-id", win_id, "_NET_WM_NAME"]) or ""
+    wm_class = _run(["xprop", "-id", win_id, "WM_CLASS"]) or ""
 
-        m = re.search(r'"(.+)"', title_raw)
-        title = m.group(1) if m else ""
+    m = re.search(r'"(.+)"', title_raw)
+    title = m.group(1) if m else ""
 
-        return {
-            "id": win_id,
-            "title": title.lower(),
-            "wm_class": wm_class.lower(),
-            "source": "x11",
-        }
-
-    return None
+    return {
+        "id": win_id,
+        "title": title.lower(),
+        "wm_class": wm_class.lower(),
+        "source": "x11",
+    }
 
 
 # ─── Game matching ───────────────────────────────────────────────────────────
@@ -194,6 +198,19 @@ def apply_idle(client: obs.ReqClient) -> None:
     apply_game(client, DEFAULT_FULLSCREEN)
 
 
+def _any_game_running() -> Optional[Game]:
+    """Return the first Game whose process is running, or None.
+
+    Used as a fallback for Wayland-native games, since KWin's interactive
+    queryWindowInfo() cannot be used (it shows a crosshair cursor).
+    """
+    for game in GAMES:
+        for proc in game.processes:
+            if _pgrep(proc):
+                return game
+    return None
+
+
 # ─── Main loop ───────────────────────────────────────────────────────────────
 
 
@@ -203,30 +220,46 @@ def run(client: obs.ReqClient) -> None:
     apply_game(client, DEFAULT_FULLSCREEN)
 
     while True:
-        window = get_fullscreen_window()
+        game = None
+        source = ""
 
+        window = get_fullscreen_window()
         if window:
             game = match_game(window)
+            source = window.get("source", "?")
+        else:
+            # No X11 fullscreen — try process detection (Wayland-native)
+            game = _any_game_running()
+            if game:
+                source = "process"
+
+        if game:
             if game != current_game:
-                log.info(
-                    f"Fullscreen ({window.get('source', '?')}): "
-                    f"'{window['title'][:60]}' → {game.name}"
-                )
+                log.info(f"{source}: → {game.name}")
                 apply_game(client, game)
                 current_game = game
         else:
             if current_game is not None:
-                log.info("No longer fullscreen")
+                log.info("No longer fullscreen — reverting to default")
                 apply_idle(client)
                 current_game = None
 
         time.sleep(POLL_INTERVAL)
 
 
+MAX_RETRIES = 3
+
+
 def main() -> None:
-    while True:
+    retries = 0
+
+    while retries < MAX_RETRIES:
         try:
-            log.info(f"Connecting to OBS ({OBS_HOST}:{OBS_PORT})...")
+            retries += 1
+            log.info(
+                f"Connecting to OBS ({OBS_HOST}:{OBS_PORT})... "
+                f"(attempt {retries}/{MAX_RETRIES})"
+            )
             client = obs.ReqClient(
                 host=OBS_HOST,
                 port=OBS_PORT,
@@ -234,16 +267,30 @@ def main() -> None:
                 timeout=5,
             )
             log.info("Connected.")
+            notify("OBS Game Watch", "Verbonden met OBS WebSocket ✅")
+            retries = 0  # reset op succes, zodat hij bij disconnect opnieuw retried
             run(client)
 
         except KeyboardInterrupt:
+            notify("OBS Game Watch", "Gestopt.")
             log.info("Stopped.")
             sys.exit(0)
 
         except Exception as e:
-            log.warning(f"OBS connection lost: {e}")
-            log.info(f"Retrying in {RECONNECT_INTERVAL}s...")
-            time.sleep(RECONNECT_INTERVAL)
+            log.warning(f"OBS connection failed: {e}")
+
+            if retries < MAX_RETRIES:
+                log.info(f"Retrying in {RECONNECT_INTERVAL}s...")
+                time.sleep(RECONNECT_INTERVAL)
+            else:
+                log.error(f"Giving up after {MAX_RETRIES} failed attempts.")
+                notify(
+                    "OBS Game Watch",
+                    f"Kan niet verbinden na {MAX_RETRIES} pogingen.\n"
+                    f"Start OBS met WebSocket server en herstart de service.",
+                    urgency="critical",
+                )
+                sys.exit(0)
 
 
 if __name__ == "__main__":

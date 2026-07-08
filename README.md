@@ -14,17 +14,20 @@ still running.
 
 | Method | Works for | Tool |
 |---|---|---|
-| xprop | X11 / Xwayland windows (Proton, Wine) | `xorg-xprop` |
-| KWin D-Bus | KDE Wayland native games (CS2, etc.) | `python-dbus` |
+| xdotool + xprop | X11 / Xwayland windows (Proton, Wine) | `xdotool`, `xorg-xprop` |
+| pgrep (process) | Any game (Wayland-native fallback) | `pgrep` |
 
-xprop is running first and tries to detect it automatically, if it does not find anything you can manually click the game in focus to detect it with KWin D-Bus.
+**Note:** KWin's D-Bus `queryWindowInfo()` is interactive (shows a crosshair
+cursor), so it is intentionally NOT used. Wayland-native games (CS2, etc.)
+are detected by running process instead — add their process name via
+`add_game.py` and it will match when the game is running.
 
 ## Requirements
 
 ### Arch Linux
 
 ```bash
-sudo pacman -S xdotool xorg-xprop python-dbus
+sudo pacman -S xdotool xorg-xprop libnotify
 pip install obsws-python
 ```
 
@@ -80,6 +83,31 @@ and appends an entry to `games_user.py`.
 Games that natively support 21:9 (ultrawide) don't need to be added,
 they'll automatically use the default `Ultrawide` profile.
 
+## Runtime behaviour
+
+Once started, the script:
+
+1. **Tries to connect** to OBS WebSocket (up to 3 attempts, 10s apart).
+2. On success: sends a **desktop notification** ✅, sets the default profile
+   (Ultrawide), and **starts the replay buffer**.
+3. **Polls every 4 seconds**:
+   - **X11/XWayland**: checks if the active window is fullscreen via xdotool + xprop
+   - **Wayland-native**: matched by running process (pgrep)
+4. When a game is detected → switches profile/scene and starts replay buffer.
+5. When no game is detected → reverts to the default Ultrawide profile.
+6. If the **connection drops** mid-session, it retries up to 3 times again.
+7. After **3 failed attempts**: sends a critical notification and **stops**
+   (start OBS and restart the service manually).
+
+Desktop notifications use `notify-send` (KDE, GNOME, dunst, etc.):
+
+| Event | Notification | Urgency |
+|---|---|---|
+| Connected to OBS | ✅ Verbonden met OBS WebSocket | normal |
+| Connection failed | ⚠️ Opnieuw proberen... (1/3, 2/3, 3/3) | normal |
+| Gave up | 🛑 Gestopt na 3 pogingen — start OBS en herstart | critical |
+| Stopped (Ctrl+C) | 🛑 Gestopt | normal |
+
 ## Running
 
 ### Manually
@@ -113,7 +141,8 @@ After=graphical-session.target
 Type=simple
 ExecStart=%h/scripts/obs-game-watch/obs_game_watch.py
 Restart=on-failure
-RestartSec=10
+RestartSec=30
+StartLimitBurst=3
 
 [Install]
 WantedBy=default.target
@@ -143,8 +172,11 @@ systemctl --user disable obs-game-watch.service    # don't start at boot
 ```
 
 > **Why systemd?** It starts after the graphical session is ready (so D-Bus
-> and OBS are available), restarts automatically if the script crashes,
-> and gives you proper logging via `journalctl`.
+> and OBS are available). The script tries 3 times to connect and then stops
+> if OBS isn't available — start OBS first, then restart the service.
+
+> **Note:** Make sure `libnotify` is installed for desktop notifications:
+> `sudo pacman -S libnotify`.
 
 ## File structure
 
