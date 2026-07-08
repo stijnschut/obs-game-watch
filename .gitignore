@@ -1,0 +1,9 @@
+# Personal game configuration (auto-created by add_game.py)
+games_user.py
+
+# Secrets (copy of .env.example)
+.env
+
+# Python cache
+__pycache__/
+*.pyc
