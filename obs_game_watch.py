@@ -177,9 +177,26 @@ def replay_active(client: obs.ReqClient) -> bool:
         return False
 
 
+def _stop_replay(client: obs.ReqClient) -> bool:
+    """Stop the replay buffer if it's active. Returns True if it was running."""
+    try:
+        if client.get_replay_buffer_status().output_active:
+            log.info("Replay buffer → stopping")
+            client.stop_replay_buffer()
+            time.sleep(1)
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def apply_game(client: obs.ReqClient, game: Game) -> None:
     """Switch OBS to the given game's profile/scene and ensure replay buffer is on."""
+    needs_restart = False
+
     if get_profile(client) != game.profile:
+        # Profile switch requires replay buffer restart
+        needs_restart = _stop_replay(client)
         log.info(f"Profile  → {game.profile}")
         client.set_current_profile(game.profile)
         time.sleep(PROFILE_SWITCH_WAIT)
@@ -188,7 +205,7 @@ def apply_game(client: obs.ReqClient, game: Game) -> None:
         log.info(f"Scene    → {game.scene}")
         client.set_current_program_scene(game.scene)
 
-    if not replay_active(client):
+    if needs_restart or not replay_active(client):
         log.info("Replay buffer → starting")
         client.start_replay_buffer()
 
