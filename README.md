@@ -1,23 +1,23 @@
 # OBS Game Watch
 
 Dynamically switch OBS profiles & scenes based on the game you're playing.
-Replay buffer stays on at all times — never miss a clip again.
+Replay buffer stays on at all times.
 
 ## How it works
 
 When you launch a game in fullscreen, this script detects it and tells OBS
 to switch to the matching profile/scene. Close the game (or alt-tab away)
-and it reverts to your ultrawide/default profile — with the replay buffer
+and it reverts to your ultrawide/default profile, with the replay buffer
 still running.
 
 ### Detection methods
 
 | Method | Works for | Tool |
 |---|---|---|
-| KWin D-Bus | KDE Wayland native games (CS2, etc.) | `python-dbus` |
 | xprop | X11 / Xwayland windows (Proton, Wine) | `xorg-xprop` |
+| KWin D-Bus | KDE Wayland native games (CS2, etc.) | `python-dbus` |
 
-Both are tried automatically; the first match wins.
+xprop is running first and tries to detect it automatically, if it does not find anything you can manually click the game in focus to detect it with KWin D-Bus.
 
 ## Requirements
 
@@ -77,7 +77,7 @@ python add_game.py
 The script detects the active game window, suggests process / title patterns,
 and appends an entry to `games_user.py`.
 
-Games that natively support 21:9 (ultrawide) don't need to be added —
+Games that natively support 21:9 (ultrawide) don't need to be added,
 they'll automatically use the default `Ultrawide` profile.
 
 ## Running
@@ -99,5 +99,5 @@ Press **Ctrl+C** to stop.
 | `add_game.py` | ✅ | Interactive game list manager |
 | `games.py` | ✅ | `Game` dataclass & profile constants |
 | `games_user.py` | ❌ | Your personal 16:9 game list (auto-created) |
-| `.env` | ❌ | Secrets (OBS password) — copy of `.env.example` |
+| `.env` | ❌ | Secrets (OBS password), copy of `.env.example` |
 | `.env.example` | ✅ | Template with all config keys |
