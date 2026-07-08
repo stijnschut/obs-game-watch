@@ -98,6 +98,9 @@ Once started, the script:
 6. If the **connection drops** mid-session, it retries up to 3 times again.
 7. After **3 failed attempts**: sends a critical notification and **stops**
    (start OBS and restart the service manually).
+8. **Clip notifications**: when you save a replay (via OBS hotkey or the
+   "Save Replay" button), the script catches the `ReplayBufferSaved` event
+   and shows a notification with the filename.
 
 Desktop notifications use `notify-send` (KDE, GNOME, dunst, etc.):
 
@@ -107,6 +110,7 @@ Desktop notifications use `notify-send` (KDE, GNOME, dunst, etc.):
 | Connection failed | ⚠️ Opnieuw proberen... (1/3, 2/3, 3/3) | normal |
 | Gave up | 🛑 Gestopt na 3 pogingen — start OBS en herstart | critical |
 | Stopped (Ctrl+C) | 🛑 Gestopt | normal |
+| Clip saved | ✅ Clip opgeslagen + bestandsnaam | normal |
 
 ## Running
 
@@ -177,6 +181,15 @@ systemctl --user disable obs-game-watch.service    # don't start at boot
 
 > **Note:** Make sure `libnotify` is installed for desktop notifications:
 > `sudo pacman -S libnotify`.
+
+## Clip notifications
+
+The script listens for the `ReplayBufferSaved` event from OBS. Whenever you
+save the replay buffer (via an OBS hotkey, the "Save Replay" button, or any
+other method), you'll get a desktop notification with the filename.
+
+To set up a hotkey in OBS: **Settings → Hotkeys** → find "Save Replay Buffer"
+→ set your preferred shortcut (e.g. Shift+F12).
 
 ## File structure
 

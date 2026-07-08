@@ -228,15 +228,49 @@ def _any_game_running() -> Optional[Game]:
     return None
 
 
+# ─── OBS event listener ────────────────────────────────────────────────────
+
+
+def on_replay_buffer_saved(data):
+    """Called when OBS finishes saving the replay buffer.
+
+    Function name convention: on_<snake_case_event> → <PascalCase event>
+    i.e. on_replay_buffer_saved → ReplayBufferSaved
+    """
+    path = data.saved_replay_path
+    filename = os.path.basename(path)
+    log.info(f"Replay buffer saved to: {path}")
+    notify("OBS Game Watch", f"Clip opgeslagen ✅\n{filename}")
+
+
+def _start_event_client() -> Optional[obs.EventClient]:
+    """Start an EventClient that listens for OBS events."""
+    try:
+        ec = obs.EventClient(
+            host=OBS_HOST,
+            port=OBS_PORT,
+            password=OBS_PASSWORD,
+        )
+        # register() infers event name from function name:
+        # on_replay_buffer_saved → ReplayBufferSaved
+        ec.callback.register(on_replay_buffer_saved)
+        log.info("Event listener active — waiting for ReplayBufferSaved events.")
+        return ec
+    except Exception as e:
+        log.warning(f"Event listener failed to start: {e}")
+        return None
+
+
 # ─── Main loop ───────────────────────────────────────────────────────────────
 
 
-def run(client: obs.ReqClient) -> None:
+def run(client: obs.ReqClient, event_client: Optional[obs.EventClient] = None) -> None:
     current_game: Optional[Game] = None
     log.info("Watch started — Ultrawide + replay buffer active.")
     apply_game(client, DEFAULT_FULLSCREEN)
 
     while True:
+        # ── Game detection ──────────────────────────────────────────────────
         game = None
         source = ""
 
@@ -285,8 +319,9 @@ def main() -> None:
             )
             log.info("Connected.")
             notify("OBS Game Watch", "Verbonden met OBS WebSocket ✅")
+            event_client = _start_event_client()
             retries = 0  # reset op succes, zodat hij bij disconnect opnieuw retried
-            run(client)
+            run(client, event_client)
 
         except KeyboardInterrupt:
             notify("OBS Game Watch", "Gestopt.")
