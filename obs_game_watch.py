@@ -10,6 +10,9 @@ Wayland-native detection: KWin's D-Bus queryWindowInfo() is interactive (shows
 crosshair cursor), so it is NOT used. Instead, Wayland-native games are matched
 by running process (pgrep). Add process patterns in games_user.py via add_game.py.
 
+Clip shortcut: Send SIGUSR1 to save the replay buffer. The ReplayBufferSaved
+event triggers a desktop notification with the filename.
+
 Requirements:
     pip install obsws-python
     sudo pacman -S xdotool xorg-xprop libnotify
@@ -33,7 +36,7 @@ from games_user import DEFAULT_FULLSCREEN, GAMES, Game
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 
-# Load .env (optional) — makes env vars accessible via os.getenv()
+# Load .env (optional)
 _env_path = Path(__file__).parent / ".env"
 if _env_path.exists():
     for _line in _env_path.read_text().splitlines():
@@ -49,6 +52,8 @@ OBS_PASSWORD = os.getenv("OBS_PASSWORD", "")
 POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", "4"))
 RECONNECT_INTERVAL = float(os.getenv("RECONNECT_INTERVAL", "10"))
 PROFILE_SWITCH_WAIT = float(os.getenv("PROFILE_SWITCH_WAIT", "1.5"))
+STABLE_COUNT = int(os.getenv("STABLE_COUNT", "2"))  # debounce: consecutive polls needed
+MAX_RETRIES = 3
 
 
 # ─── Desktop notifications ──────────────────────────────────────────────────
@@ -58,17 +63,11 @@ def notify(title: str, message: str, urgency: str = "normal") -> None:
     """Send a desktop notification via notify-send (KDE/GNOME/dunst)."""
     try:
         subprocess.run(
-            [
-                "notify-send",
-                "--app-name=OBS Game Watch",
-                f"--urgency={urgency}",
-                title,
-                message,
-            ],
+            ["notify-send", "--app-name=OBS Game Watch", f"--urgency={urgency}", title, message],
             timeout=5,
         )
     except Exception:
-        pass  # notify-send niet beschikbaar — niet阻塞end
+        pass
 
 
 # ─── Logging ─────────────────────────────────────────────────────────────────
@@ -81,14 +80,12 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-# ─── Fullscreen detection (KDE Wayland + Xwayland) ───────────────────────────
+# ─── Fullscreen detection ───────────────────────────────────────────────────
 
 
 def _run(cmd: list[str]) -> Optional[str]:
     try:
-        return subprocess.check_output(
-            cmd, stderr=subprocess.DEVNULL, text=True
-        ).strip()
+        return subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True).strip()
     except subprocess.CalledProcessError:
         return None
 
@@ -97,18 +94,12 @@ def get_fullscreen_window() -> Optional[dict]:
     """
     Return info about the active fullscreen X11/XWayland window, or None.
 
-    Uses xdotool + xprop to detect XWayland windows (Proton, Wine, etc.).
-    Wayland-native windows cannot be queried non-interactively — KWin's
-    queryWindowInfo() shows a crosshair cursor, so it is NOT used.
-    Wayland-native games are instead detected by process (see run()).
+    Wayland-native windows cannot be queried non-interactively (KWin's
+    queryWindowInfo shows a crosshair cursor), so they are detected by
+    process instead (see _any_game_running).
     """
     win_id = _run(["xdotool", "getactivewindow"])
-    if not win_id:
-        return None
-
-    # On Wayland, xdotool returns the XWayland root window (0x200000 = 2097152)
-    # when no X11 window is active. Skip it — it has no real properties.
-    if win_id == "2097152":
+    if not win_id or win_id == "2097152":  # XWayland root on Wayland
         return None
 
     state = _run(["xprop", "-id", win_id, "_NET_WM_STATE"]) or ""
@@ -134,9 +125,7 @@ def get_fullscreen_window() -> Optional[dict]:
 
 def _pgrep(pattern: str) -> bool:
     try:
-        subprocess.check_output(
-            ["pgrep", "-f", "-i", pattern], stderr=subprocess.DEVNULL
-        )
+        subprocess.check_output(["pgrep", "-f", "-i", pattern], stderr=subprocess.DEVNULL)
         return True
     except subprocess.CalledProcessError:
         return False
@@ -158,6 +147,19 @@ def match_game(window: dict) -> Game:
         if _matches(game, window):
             return game
     return DEFAULT_FULLSCREEN
+
+
+def _any_game_running() -> Optional[Game]:
+    """Return the first Game whose process is running, or None.
+
+    Used as fallback for Wayland-native games since KWin's interactive
+    queryWindowInfo() cannot be used (shows a crosshair cursor).
+    """
+    for game in GAMES:
+        for proc in game.processes:
+            if _pgrep(proc):
+                return game
+    return None
 
 
 # ─── OBS helpers ─────────────────────────────────────────────────────────────
@@ -196,7 +198,6 @@ def apply_game(client: obs.ReqClient, game: Game) -> None:
     needs_restart = False
 
     if get_profile(client) != game.profile:
-        # Profile switch requires replay buffer restart
         needs_restart = _stop_replay(client)
         log.info(f"Profile  → {game.profile}")
         client.set_current_profile(game.profile)
@@ -216,44 +217,24 @@ def apply_idle(client: obs.ReqClient) -> None:
     apply_game(client, DEFAULT_FULLSCREEN)
 
 
-def _any_game_running() -> Optional[Game]:
-    """Return the first Game whose process is running, or None.
-
-    Used as a fallback for Wayland-native games, since KWin's interactive
-    queryWindowInfo() cannot be used (it shows a crosshair cursor).
-    """
-    for game in GAMES:
-        for proc in game.processes:
-            if _pgrep(proc):
-                return game
-    return None
-
-
 # ─── Clip signal (SIGUSR1) ───────────────────────────────────────────────────
 
 _clip_requested: bool = False
 
 
 def _handle_clip_signal(signum: int, frame) -> None:
-    """SIGUSR1 handler: flags the main loop to save the replay buffer.
-
-    This runs in signal context — only sets a flag, no I/O.
-    The actual save happens in run() to avoid race conditions with
-    ongoing WebSocket requests.
-    """
+    """SIGUSR1 handler: sets a flag, no I/O (signal context)."""
     global _clip_requested
     _clip_requested = True
 
 
 # ─── OBS event listener ────────────────────────────────────────────────────
 
+_event_client: Optional[obs.EventClient] = None
+
 
 def on_replay_buffer_saved(data):
-    """Called when OBS finishes saving the replay buffer.
-
-    Function name convention: on_<snake_case_event> → <PascalCase event>
-    i.e. on_replay_buffer_saved → ReplayBufferSaved
-    """
+    """OBS callback: ReplayBufferSaved event."""
     path = data.saved_replay_path
     filename = os.path.basename(path)
     log.info(f"Replay buffer saved to: {path}")
@@ -262,17 +243,12 @@ def on_replay_buffer_saved(data):
 
 def _start_event_client() -> Optional[obs.EventClient]:
     """Start an EventClient that listens for OBS events."""
+    global _event_client
     try:
-        ec = obs.EventClient(
-            host=OBS_HOST,
-            port=OBS_PORT,
-            password=OBS_PASSWORD,
-        )
-        # register() infers event name from function name:
-        # on_replay_buffer_saved → ReplayBufferSaved
-        ec.callback.register(on_replay_buffer_saved)
+        _event_client = obs.EventClient(host=OBS_HOST, port=OBS_PORT, password=OBS_PASSWORD)
+        _event_client.callback.register(on_replay_buffer_saved)
         log.info("Event listener active — waiting for ReplayBufferSaved events.")
-        return ec
+        return _event_client
     except Exception as e:
         log.warning(f"Event listener failed to start: {e}")
         return None
@@ -281,31 +257,30 @@ def _start_event_client() -> Optional[obs.EventClient]:
 # ─── Main loop ───────────────────────────────────────────────────────────────
 
 
-def run(client: obs.ReqClient, event_client: Optional[obs.EventClient] = None) -> None:
+def run(client: obs.ReqClient) -> None:
     global _clip_requested
 
     current_game: Optional[Game] = None
+    candidate_game: Optional[Game] = None
+    stable: int = 0
+
     log.info("Watch started — Ultrawide + replay buffer active.")
     apply_game(client, DEFAULT_FULLSCREEN)
 
     while True:
-        # ── Check for clip request (set by SIGUSR1) ────────────────────────
+        # ── Clip request (triggered by SIGUSR1 from KDE shortcut) ───────────
         if _clip_requested:
             _clip_requested = False
             try:
                 log.info("Clip requested — saving replay buffer...")
                 client.save_replay_buffer()
-                # Notification comes from ReplayBufferSaved event (async)
+                # Notification comes from ReplayBufferSaved event
             except Exception as e:
                 log.warning(f"Failed to save replay buffer: {e}")
-                notify(
-                    "OBS Game Watch",
-                    "Clip opslaan mislukt ❌",
-                    urgency="critical",
-                )
+                notify("OBS Game Watch", "Clip opslaan mislukt ❌", urgency="critical")
 
         # ── Game detection ──────────────────────────────────────────────────
-        game = None
+        game: Optional[Game] = None
         source = ""
 
         window = get_fullscreen_window()
@@ -313,26 +288,34 @@ def run(client: obs.ReqClient, event_client: Optional[obs.EventClient] = None) -
             game = match_game(window)
             source = window.get("source", "?")
         else:
-            # No X11 fullscreen — try process detection (Wayland-native)
             game = _any_game_running()
             if game:
                 source = "process"
 
-        if game:
-            if game != current_game:
+        # ── Debounce: only switch after STABLE_COUNT consecutive same results
+        if game == candidate_game:
+            stable += 1
+        else:
+            candidate_game = game
+            stable = 1
+
+        if stable >= STABLE_COUNT:
+            if game and game != current_game:
                 log.info(f"{source}: → {game.name}")
+                notify("OBS Game Watch", f"Profile → {game.profile}\nScene → {game.scene}")
                 apply_game(client, game)
                 current_game = game
-        else:
-            if current_game is not None:
+            elif not game and current_game is not None:
                 log.info("No longer fullscreen — reverting to default")
+                notify("OBS Game Watch", "Profile → Ultrawide\nScene → 43:18")
                 apply_idle(client)
                 current_game = None
+                candidate_game = None
 
         time.sleep(POLL_INTERVAL)
 
 
-MAX_RETRIES = 3
+# ─── Entry point ────────────────────────────────────────────────────────────
 
 
 def main() -> None:
@@ -344,21 +327,13 @@ def main() -> None:
     while retries < MAX_RETRIES:
         try:
             retries += 1
-            log.info(
-                f"Connecting to OBS ({OBS_HOST}:{OBS_PORT})... "
-                f"(attempt {retries}/{MAX_RETRIES})"
-            )
-            client = obs.ReqClient(
-                host=OBS_HOST,
-                port=OBS_PORT,
-                password=OBS_PASSWORD,
-                timeout=5,
-            )
+            log.info(f"Connecting to OBS ({OBS_HOST}:{OBS_PORT})... (attempt {retries}/{MAX_RETRIES})")
+            client = obs.ReqClient(host=OBS_HOST, port=OBS_PORT, password=OBS_PASSWORD, timeout=5)
             log.info("Connected.")
             notify("OBS Game Watch", "Verbonden met OBS WebSocket ✅")
-            event_client = _start_event_client()
-            retries = 0  # reset op succes, zodat hij bij disconnect opnieuw retried
-            run(client, event_client)
+            _start_event_client()
+            retries = 0
+            run(client)
 
         except KeyboardInterrupt:
             notify("OBS Game Watch", "Gestopt.")
@@ -367,7 +342,6 @@ def main() -> None:
 
         except Exception as e:
             log.warning(f"OBS connection failed: {e}")
-
             if retries < MAX_RETRIES:
                 log.info(f"Retrying in {RECONNECT_INTERVAL}s...")
                 time.sleep(RECONNECT_INTERVAL)
@@ -376,7 +350,7 @@ def main() -> None:
                 notify(
                     "OBS Game Watch",
                     f"Kan niet verbinden na {MAX_RETRIES} pogingen.\n"
-                    f"Start OBS met WebSocket server en herstart de service.",
+                    "Start OBS met WebSocket server en herstart de service.",
                     urgency="critical",
                 )
                 sys.exit(0)
