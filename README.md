@@ -27,7 +27,7 @@ are detected by running process instead — add their process name via
 ### Arch Linux
 
 ```bash
-sudo pacman -S xdotool xorg-xprop libnotify
+sudo pacman -S xdotool xorg-xprop libnotify python-dbus
 pip install obsws-python
 ```
 
@@ -96,8 +96,9 @@ Once started, the script:
 4. When a game is detected → switches profile/scene and starts replay buffer.
 5. When no game is detected → reverts to the default Ultrawide profile.
 6. If the **connection drops** mid-session, it retries up to 3 times again.
-7. After **3 failed attempts**: sends a critical notification and **stops**
-   (start OBS and restart the service manually).
+7. After **3 failed attempts**: sends a critical notification with
+   **Restart** and **Cancel** buttons. Click Restart to restart the
+   service automatically once OBS is ready.
 8. **Clip on demand**: send `SIGUSR1` to save the replay buffer. The script
    catches the signal, calls `SaveReplayBuffer`, and listens for the
    `ReplayBufferSaved` event to show a notification with the filename.
@@ -107,11 +108,12 @@ Desktop notifications use `notify-send` (KDE, GNOME, dunst, etc.):
 
 | Event | Notification | Urgency |
 |---|---|---|
-| Connected to OBS | ✅ Verbonden met OBS WebSocket | normal |
-| Connection failed | ⚠️ Opnieuw proberen... (1/3, 2/3, 3/3) | normal |
-| Gave up | 🛑 Gestopt na 3 pogingen — start OBS en herstart | critical |
-| Stopped (Ctrl+C) | 🛑 Gestopt | normal |
-| Clip saved | ✅ Clip opgeslagen + bestandsnaam | normal |
+| Connected to OBS | ✅ Connected to OBS WebSocket | normal |
+| Connection failed | ⚠️ Retrying... (1/3, 2/3, 3/3) | normal |
+| Gave up | 🛑 Failed after 3 attempts — Restart/Cancel buttons | critical |
+| Stopped (Ctrl+C) | 🛑 Stopped | normal |
+| Profile switch | 📺 Profile → name | normal |
+| Clip saved | ✅ Clip saved + filename | normal |
 
 ## Running
 
